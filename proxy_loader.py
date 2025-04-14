@@ -1,14 +1,12 @@
 import requests
 from db import add_proxy
 
-def load_proxies_from_url(url):
+def load_proxies_from_file(file_path="socks5.txt"):
     try:
-        response = requests.get(url)
-        response.raise_for_status()
-        lines = response.text.splitlines()
-        for line in lines:
-            if ':' in line:
-                ip, port = line.strip().split(':')
-                add_proxy(ip.strip(), int(port.strip()))
+        with open(file_path, "r") as file:
+            proxies = [line.strip() for line in file if line.strip()]
+            cursor.executemany("INSERT OR IGNORE INTO proxies (proxy) VALUES (?)", [(p,) for p in proxies])
+            conn.commit()
+            print(f"[+] Loaded {len(proxies)} proxies from file")
     except Exception as e:
-        print(f"[!] Failed to load proxies: {e}")
+        print(f"[!] Failed to load proxies from file: {e}")

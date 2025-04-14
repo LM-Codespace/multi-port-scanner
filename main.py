@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
 import csv
 from import_hosts import import_hosts_from_csv
-from proxy_loader import load_proxies_from_url
+from proxy_loader import load_proxies_from_file
 
 
 def scan_host(host_id, host, ports, proxy):

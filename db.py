@@ -14,11 +14,10 @@ def init_db():
         )
     ''')
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS proxies (
-            id INTEGER PRIMARY KEY,
-            ip TEXT NOT NULL,
-            port INTEGER NOT NULL
-        )
+    CREATE TABLE IF NOT EXISTS proxies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proxy TEXT UNIQUE
+    )
     ''')
     conn.commit()
     conn.close()

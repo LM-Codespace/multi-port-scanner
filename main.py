@@ -49,7 +49,7 @@ def export_to_csv(results, filename="scan_results.csv"):
 
 if __name__ == "__main__":
     # CONFIGURE THESE:
-    proxy_url = "https://example.com/socks5_proxies.txt"
+    proxy_url = "proxy_url = "https://raw.githubusercontent.com/user/proxy-list/main/socks5.txt"
     hosts_csv = "host_ranges.csv"
     ports = [22, 80, 443]  # You can customize this
 

@@ -6,6 +6,7 @@ import csv
 from import_hosts import import_hosts_from_csv
 from proxy_loader import load_proxies_from_url
 
+
 def scan_host(host_id, host, ports, proxy):
     results = []
     for port in ports:
@@ -48,6 +49,7 @@ def export_to_csv(results, filename="scan_results.csv"):
             writer.writerow([host, port, "open" if status else "closed"])
 
 if __name__ == "__main__":
+    init_db()
     # CONFIGURE THESE:
     proxy_url = "proxy_url = "https://raw.githubusercontent.com/user/proxy-list/main/socks5.txt"
     hosts_csv = "host_ranges.csv"

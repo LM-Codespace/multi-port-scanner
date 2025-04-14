@@ -1,5 +1,9 @@
 import requests
 from db import add_proxy
+import sqlite3
+
+conn = sqlite3.connect("scanner.db", check_same_thread=False)
+cursor = conn.cursor()
 
 def load_proxies_from_file(file_path="socks5.txt"):
     try:

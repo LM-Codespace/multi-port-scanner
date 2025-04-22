@@ -1,4 +1,0 @@
-
-netaddr
-PySocks
-requests

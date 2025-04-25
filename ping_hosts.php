@@ -53,12 +53,14 @@ if (isset($_POST['ping'])) {
     $ip_address = $_POST['ip_address'];
     $proxy = getRandomWorkingProxy($conn);
     if ($proxy) {
-        $live = ping_through_proxy($ip_address, 80, $proxy['ip'], $proxy['port'], $proxy['type']) ? 'live' : 'offline';
-        if ($live === 'offline') {
+        $is_live = ping_through_proxy($ip_address, 80, $proxy['ip'], $proxy['port'], $proxy['type']) ? 'live' : 'offline';
+        $proxy_used = "{$proxy['type']}://{$proxy['ip']}:{$proxy['port']}";
+
+        if ($is_live === 'offline') {
             $conn->query("DELETE FROM ip_hosts WHERE ip_address = '$ip_address'");
         } else {
-            $stmt = $conn->prepare("UPDATE ip_hosts SET is_live = ? WHERE ip_address = ?");
-            $stmt->bind_param("ss", $live, $ip_address);
+            $stmt = $conn->prepare("UPDATE ip_hosts SET is_live = ?, last_proxy_used = ? WHERE ip_address = ?");
+            $stmt->bind_param("sss", $is_live, $proxy_used, $ip_address);
             $stmt->execute();
             $stmt->close();
         }
@@ -100,6 +102,7 @@ $hosts = $conn->query("SELECT * FROM ip_hosts");
         <a href="view_proxies.php">View Stored Proxies</a>
         <a href="hosts.php">Hosts</a>
         <a href="ping_hosts.php">Ping Hosts</a>
+        <a href="nmap_scanner.php">Nmap Scans</a></li>
     </div>
 
     <div class="main-content">
@@ -128,6 +131,7 @@ $hosts = $conn->query("SELECT * FROM ip_hosts");
                     <th>ID</th>
                     <th>IP Address</th>
                     <th>Status</th>
+                    <th>Proxy Used</th>
                     <th>Action</th>
                 </tr>
                 </thead>
@@ -140,6 +144,7 @@ $hosts = $conn->query("SELECT * FROM ip_hosts");
                             <td>{$row['id']}</td>
                             <td>{$row['ip_address']}</td>
                             <td class='status {$row['is_live']}'>{$row['is_live']}</td>
+                            <td>{$row['last_proxy_used']}</td>
                             <td>
                                 <form action='ping_hosts.php' method='POST'>
                                     <input type='hidden' name='ip_address' value='{$row['ip_address']}'>
@@ -149,7 +154,7 @@ $hosts = $conn->query("SELECT * FROM ip_hosts");
                         </tr>";
                     }
                 } else {
-                    echo "<tr><td colspan='5'>No hosts found</td></tr>";
+                    echo "<tr><td colspan='6'>No hosts found</td></tr>";
                 }
                 ?>
                 </tbody>
@@ -168,7 +173,8 @@ async function scanAll() {
     for (let i = 0; i < hosts.length; i++) {
         const res = await fetch('scan_one.php?ip=' + hosts[i].ip_address);
         const data = await res.json();
-        log.innerHTML += `[${i + 1}/${hosts.length}] ${data.ip} → ${data.status}<br>`;
+        const proxyInfo = data.proxy ? ` (via ${data.proxy})` : '';
+        log.innerHTML += `[${i + 1}/${hosts.length}] ${data.ip} → ${data.status}${proxyInfo}<br>`;
         bar.style.width = ((i + 1) / hosts.length * 100).toFixed(0) + '%';
         bar.innerText = bar.style.width;
     }

@@ -10,7 +10,7 @@ if ($conn->connect_error) {
     die("Connection failed: " . $conn->connect_error);
 }
 
-// Ensure required columns exist
+// Ensure all required columns exist
 $columns_to_check = ['dns_info', 'service_info', 'os_info', 'scan_details'];
 foreach ($columns_to_check as $column) {
     $result = $conn->query("SHOW COLUMNS FROM ip_hosts LIKE '$column'");
@@ -19,12 +19,17 @@ foreach ($columns_to_check as $column) {
     }
 }
 
-// Handle scan request
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['selected_hosts'])) {
     $scan_type = $_POST['scan_type'] ?? 'basic';
     $scan_intensity = $_POST['scan_intensity'] ?? 'normal';
+    $selected_hosts = $_POST['selected_hosts'];
 
-    foreach ($_POST['selected_hosts'] as $host_id) {
+    // Randomize scan order if checkbox selected
+    if (isset($_POST['randomize_order'])) {
+        shuffle($selected_hosts);
+    }
+
+    foreach ($selected_hosts as $host_id) {
         $host_id = intval($host_id);
         $conn->query("UPDATE ip_hosts SET scan_status = 'queued' WHERE id = $host_id");
 
@@ -32,16 +37,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['selected_hosts'])) {
         if ($host_result && $host_row = $host_result->fetch_assoc()) {
             $ip_address = $host_row['ip_address'];
 
+            $scan_status = 'queued';
+            $stmt = $conn->prepare("INSERT INTO scan_history (host_id, scan_type, scan_intensity, scan_status) VALUES (?, ?, ?, ?)");
+            $stmt->bind_param("isss", $host_id, $scan_type, $scan_intensity, $scan_status);
+            $stmt->execute();
+
             if ($scan_type === 'domain') {
                 $resolved_domain = gethostbyaddr($ip_address);
                 $safe_domain = $conn->real_escape_string($resolved_domain ?: 'N/A');
 
                 $whois = shell_exec("whois $ip_address");
-                preg_match('/OrgName:\\s*(.*)/i', $whois, $orgMatch);
+                preg_match('/OrgName:\s*(.*)/i', $whois, $orgMatch);
                 $asn_info = $orgMatch[1] ?? 'Unknown';
                 $asn_info = $conn->real_escape_string($asn_info);
 
-                // Get additional DNS information
                 $dns_records = @dns_get_record($resolved_domain ?: $ip_address, DNS_ALL);
                 $dns_info = $dns_records ? json_encode($dns_records) : 'N/A';
                 $dns_info = $conn->real_escape_string($dns_info);
@@ -53,8 +62,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['selected_hosts'])) {
                     dns_info = '$dns_info',
                     last_scan = NOW()
                     WHERE id = $host_id");
+
+                $scan_status = 'completed';
+                $stmt = $conn->prepare("UPDATE scan_history SET scan_status = ? WHERE host_id = ? AND scan_type = ? AND scan_intensity = ?");
+                $stmt->bind_param("ssss", $scan_status, $host_id, $scan_type, $scan_intensity);
+                $stmt->execute();
             } else {
-                scan_target_with_proxy($ip_address, $host_id, $scan_type, $scan_intensity);
+                $cmd = "php /var/www/html/multi-port-scanner/scan_worker.php " .
+                       escapeshellarg($ip_address) . " " .
+                       escapeshellarg($host_id) . " " .
+                       escapeshellarg($scan_type) . " " .
+                       escapeshellarg($scan_intensity) .
+                       " > /dev/null 2>&1 &";
+                shell_exec($cmd);
             }
         }
     }
@@ -63,11 +83,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['selected_hosts'])) {
 }
 
 $common_ports = ['21/tcp', '22/tcp', '80/tcp', '443/tcp', '8080/tcp', '8443/tcp', '3306/tcp', '3389/tcp'];
-
-function scan_target_with_proxy($ip, $host_id, $scan_type, $intensity) {
-    $command = "php /var/www/html/multi-port-scanner/scan_worker.php $ip $host_id $scan_type $intensity > /dev/null 2>&1 &";
-    shell_exec($command);
-}
 
 function get_service_name($port) {
     $services = [
@@ -88,20 +103,82 @@ function get_service_name($port) {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Nmap Scanner</title>
+    <title>Port Scanner</title>
     <link rel="stylesheet" href="/multi-port-scanner/style.css">
+    <style>
+        .terminal {
+            background-color: #000;
+            color: #0f0;
+            padding: 10px;
+            font-family: monospace;
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #333;
+            margin-bottom: 20px;
+        }
+        .progress-container {
+            width: 100%;
+            background-color: #ddd;
+            margin: 10px 0;
+        }
+        .progress-bar {
+            height: 20px;
+            background-color: #4CAF50;
+            width: 0%;
+            text-align: center;
+            line-height: 20px;
+            color: white;
+        }
+    </style>
 </head>
 <body class="nmap-scanner-page">
 
-<nav class="sidebar">
-    <a href="/multi-port-scanner/index.php">Dashboard</a>
-    <a href="/multi-port-scanner/nmap_scanner.php" class="active">Nmap Scanner</a>
-    <a href="/multi-port-scanner/hosts.php">Host Management</a>
-    <a href="/multi-port-scanner/settings.php">Settings</a>
-</nav>
+    <div class="sidebar">
+        <nav>
+            <ul>
+                <li><a href="index.php" class="active">Home</a></li>
+                <li><a href="view_proxies.php">View Stored Proxies</a></li>
+                <li><a href="hosts.php">Hosts</a></li>
+                <li><a href="ping_hosts.php">Ping Hosts</a></li>
+                <li><a href="nmap_scanner.php">Nmap Scans</a></li>
+            </ul>
+        </nav>
+    </div>
 
 <div class="main-content">
-    <h1>Nmap Scanner</h1>
+    <h1>Port Scanner</h1>
+
+    <?php if (isset($_GET['view_log']) && is_numeric($_GET['view_log'])): ?>
+        <h2>Scan Output for Host #<?= intval($_GET['view_log']) ?></h2>
+        <pre id="scan-terminal" class="terminal">Loading log...</pre>
+        <div class="progress-container">
+            <div id="progress-bar" class="progress-bar">0%</div>
+        </div>
+        <script>
+            const hostId = <?= intval($_GET['view_log']) ?>;
+            function updateProgress() {
+                fetch(`scan_progress.php?host_id=${hostId}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.progress) {
+                            const bar = document.getElementById('progress-bar');
+                            bar.style.width = data.progress + '%';
+                            bar.textContent = data.progress + '%';
+                        }
+                    });
+            }
+            setInterval(updateProgress, 1000);
+            setInterval(() => {
+                fetch(`scan_log_fetcher.php?host_id=${hostId}`)
+                    .then(res => res.text())
+                    .then(text => {
+                        const terminal = document.getElementById('scan-terminal');
+                        terminal.textContent = text;
+                        terminal.scrollTop = terminal.scrollHeight;
+                    });
+            }, 1000);
+        </script>
+    <?php endif; ?>
 
     <form method="POST" action="nmap_scanner.php">
         <div class="form-group">
@@ -112,8 +189,6 @@ function get_service_name($port) {
                         <option value="basic">Basic Scan (Top Ports)</option>
                         <option value="full">Full Port Scan</option>
                         <option value="services">Service Detection</option>
-                        <option value="os">OS Detection</option>
-                        <option value="vuln">Vulnerability Scan</option>
                         <option value="domain">Domain Resolution Only</option>
                     </select>
                 </div>
@@ -124,6 +199,12 @@ function get_service_name($port) {
                         <option value="aggressive">Aggressive</option>
                         <option value="stealthy">Stealthy</option>
                     </select>
+                </div>
+                <div class="form-col">
+                    <label>
+                        <input type="checkbox" name="randomize_order" value="1">
+                        Randomize Scan Order
+                    </label>
                 </div>
                 <div class="form-col">
                     <button type="submit" class="btn">Scan Selected</button>
@@ -144,12 +225,12 @@ function get_service_name($port) {
                         <th>ASN/Org</th>
                         <th>Status</th>
                         <th>Scan</th>
-                        <th>OS</th>
                         <th>Services</th>
                         <?php foreach ($common_ports as $port): ?>
                             <th><?= htmlspecialchars($port) ?></th>
                         <?php endforeach; ?>
                         <th>Last Scan</th>
+                        <th>View Log</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -159,31 +240,23 @@ function get_service_name($port) {
                         while ($scan_data = $result->fetch_assoc()):
                             $open_ports = isset($scan_data['open_ports']) ? explode(', ', $scan_data['open_ports']) : [];
                             $service_info = isset($scan_data['service_info']) ? json_decode($scan_data['service_info'], true) : [];
-                            $os_info = isset($scan_data['os_info']) ? json_decode($scan_data['os_info'], true) : [];
-                            $os_guess = $os_info['os_match'][0]['name'] ?? 'Unknown';
                             $service_count = count($service_info);
-                            $scan_details = isset($scan_data['scan_details']) ? substr($scan_data['scan_details'], 0, 100) : '';
                     ?>
                             <tr>
                                 <td><input type="checkbox" name="selected_hosts[]" value="<?= $scan_data['id'] ?>"></td>
                                 <td><?= $scan_data['id'] ?></td>
                                 <td><?= htmlspecialchars($scan_data['ip_address']) ?></td>
-                                <td>
-                                    <?= htmlspecialchars($scan_data['resolved_domain'] ?? 'N/A') ?>
-                                    <?php if (!empty($scan_data['dns_info'])): ?>
-                                        <span class="info-icon" title="<?= htmlspecialchars(substr($scan_data['dns_info'], 0, 200)) ?>...">ℹ️</span>
-                                    <?php endif; ?>
-                                </td>
+                                <td><?= htmlspecialchars($scan_data['resolved_domain'] ?? 'N/A') ?></td>
                                 <td><?= htmlspecialchars($scan_data['asn_info'] ?? 'Unknown') ?></td>
                                 <td><span class="status-badge <?= strtolower($scan_data['is_live']) ?>"><?= htmlspecialchars($scan_data['is_live']) ?></span></td>
                                 <td><span class="status-badge <?= strtolower($scan_data['scan_status']) ?>"><?= htmlspecialchars($scan_data['scan_status']) ?></span></td>
-                                <td><?= htmlspecialchars($os_guess) ?></td>
                                 <td><?= $service_count ?></td>
-                                <?php foreach ($common_ports as $port):
+                                <?php foreach ($common_ports as $port): ?>
+                                    <?php
                                     $service = $service_info[$port] ?? [];
                                     $service_name = $service['name'] ?? '';
                                     $service_version = $service['version'] ?? '';
-                                ?>
+                                    ?>
                                     <td>
                                         <?= in_array($port, $open_ports) ? '<span class="status-success">✓</span>' : '<span class="status-error">✗</span>' ?>
                                         <?php if (!empty($service_name)): ?>
@@ -197,6 +270,7 @@ function get_service_name($port) {
                                     </td>
                                 <?php endforeach; ?>
                                 <td><?= htmlspecialchars($scan_data['last_scan']) ?></td>
+                                <td><a href="?view_log=<?= $scan_data['id'] ?>">View Log</a></td>
                             </tr>
                         <?php endwhile; ?>
                     <?php else: ?>
@@ -211,33 +285,22 @@ function get_service_name($port) {
 </div>
 
 <script>
-    function selectAllHosts() {
-        const checkboxes = document.querySelectorAll('input[name="selected_hosts[]"]');
-        checkboxes.forEach(checkbox => {
-            checkbox.checked = true;
-        });
-    }
-
-    function clearSelection() {
-        const checkboxes = document.querySelectorAll('input[name="selected_hosts[]"]');
-        checkboxes.forEach(checkbox => {
-            checkbox.checked = false;
-        });
-    }
-
     function toggleAll() {
-        const masterCheckbox = document.getElementById('select-all');
         const checkboxes = document.querySelectorAll('input[name="selected_hosts[]"]');
-        checkboxes.forEach(checkbox => {
-            checkbox.checked = masterCheckbox.checked;
-        });
+        const isChecked = document.getElementById('select-all').checked;
+        checkboxes.forEach(cb => cb.checked = isChecked);
     }
-
-    // Auto-refresh the page every 60 seconds to update scan status
-    setTimeout(function() {
-        window.location.reload();
-    }, 60000);
+    function selectAllHosts() {
+        document.querySelectorAll('input[name="selected_hosts[]"]').forEach(cb => cb.checked = true);
+    }
+    function clearSelection() {
+        document.querySelectorAll('input[name="selected_hosts[]"]').forEach(cb => cb.checked = false);
+    }
 </script>
 
 </body>
 </html>
+
+<?php
+$conn->close();
+?>

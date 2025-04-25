@@ -63,10 +63,11 @@ $proxies = $stmt->fetchAll(PDO::FETCH_ASSOC);
         <nav>
             <ul>
                 <li><a href="index.php">Home</a></li>
-                <li><a href="view_proxies.php">View Proxies</a></li>
+                <li><a href="view_proxies.php">View Stored Proxies</a></li>
                 <li><a href="hosts.php">Hosts</a></li>
                 <li><a href="ping_hosts.php">Ping Hosts</a></li>
-            </ul>
+                <li><a href="nmap_scanner.php">Nmap Scans</a></li>
+         </ul>
         </nav>
     </div>
 

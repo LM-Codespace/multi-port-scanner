@@ -1,4 +1,21 @@
 <?php
+
+function check_proxy($ip, $port) {
+    // Example of checking a proxy with cURL
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, "http://$ip:$port");  // You might want to use a more reliable test URL
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);  // Timeout of 10 seconds
+
+    $result = curl_exec($ch);
+    $status_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    return ['is_working' => $status_code == 200];
+}
+?>
+root@server94458:/var/www/html/multi-port-scanner# cat hosts.php
+<?php
 $servername = "localhost";
 $username = "root";
 $password = "pass";
@@ -78,10 +95,11 @@ $result = $conn->query("SELECT * FROM ip_hosts ORDER BY id ASC LIMIT 20 OFFSET $
         <nav>
             <ul>
                 <li><a href="index.php">Home</a></li>
-                <li><a href="view_proxies.php">View Proxies</a></li>
+                <li><a href="view_proxies.php">View Stored Proxies</a></li>
                 <li><a href="hosts.php">Hosts</a></li>
                 <li><a href="ping_hosts.php">Ping Hosts</a></li>
-            </ul>
+                <li><a href="nmap_scanner.php">Nmap Scans</a></li>
+        </ul>
         </nav>
     </div>
 

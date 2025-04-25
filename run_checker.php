@@ -6,89 +6,96 @@ if (!file_exists('results')) {
 
 require_once 'db.php';  // Include the database connection
 
+function scrapeProxiesFromUrls($urls) {
+    $allProxies = [];
+    $proxyPattern = '/\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b/';
+
+    foreach ($urls as $url) {
+        $url = trim($url);
+        if (empty($url)) continue;
+
+        try {
+            $context = stream_context_create([
+                'http' => ['timeout' => 10],
+                'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
+            ]);
+
+            $content = file_get_contents($url, false, $context);
+            if ($content === false) continue;
+
+            preg_match_all($proxyPattern, $content, $matches);
+            if (!empty($matches[0])) {
+                $allProxies = array_merge($allProxies, $matches[0]);
+            }
+        } catch (Exception $e) {
+            error_log("Failed to scrape proxies from $url: " . $e->getMessage());
+            continue;
+        }
+    }
+
+    return array_unique($allProxies);
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $proxies = [];
+    $proxySources = [];
 
-    // Check for valid proxy file upload
-    if (!isset($_FILES['proxy_file']) || $_FILES['proxy_file']['error'] !== UPLOAD_ERR_OK) {
-        response(false, 'Please upload a valid proxy file');
+    // Handle file upload if provided
+    if (isset($_FILES['proxy_file']) && $_FILES['proxy_file']['error'] === UPLOAD_ERR_OK) {
+        $proxy_file_path = tempnam(sys_get_temp_dir(), 'proxy_');
+        if (move_uploaded_file($_FILES['proxy_file']['tmp_name'], $proxy_file_path)) {
+            $fileProxies = file($proxy_file_path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            $proxies = array_merge($proxies, $fileProxies);
+            unlink($proxy_file_path);
+            $proxySources[] = 'file';
+        }
     }
 
-    // Sanitize and extract input parameters
-    $timeout = isset($_POST['timeout']) ? intval($_POST['timeout']) : 5;
-    $batch_size = isset($_POST['batch_size']) ? intval($_POST['batch_size']) : 20;
-    $max_workers = isset($_POST['max_workers']) ? intval($_POST['max_workers']) : 20;
-    $test_url = !empty($_POST['test_url']) ? escapeshellarg(trim($_POST['test_url'])) : escapeshellarg('http://www.google.com');
-    $test_port = isset($_POST['test_port']) ? intval($_POST['test_port']) : 80;
-
-    // Handle proxy file
-    $temp_dir = sys_get_temp_dir();
-    $proxy_file_path = tempnam($temp_dir, 'proxy_');
-
-    if (!move_uploaded_file($_FILES['proxy_file']['tmp_name'], $proxy_file_path)) {
-        response(false, 'Failed to move uploaded proxy file.');
+    // Handle URL scraping if provided
+    if (!empty($_POST['proxy_urls'])) {
+        $urls = explode("\n", trim($_POST['proxy_urls']));
+        $urlProxies = scrapeProxiesFromUrls($urls);
+        $proxies = array_merge($proxies, $urlProxies);
+        if (!empty($urlProxies)) {
+            $proxySources[] = 'urls';
+        }
     }
 
-    // Result file setup
-    $timestamp = time();
-    $result_filename = "results/proxy_results_{$timestamp}.txt";
-
-    // Build command
-    $python_script = '/var/www/html/multi-port-scanner/proxy_checker.py';
-    $cmd = sprintf(
-        'python3 %s %s -o %s -t %d -b %d -w %d --test-url %s --test-port %d 2>&1',
-        escapeshellarg($python_script),
-        escapeshellarg($proxy_file_path),
-        escapeshellarg($result_filename),
-        $timeout,
-        $batch_size,
-        $max_workers,
-        $test_url,
-        $test_port
-    );
-
-    // Run Python script
-    $output = shell_exec($cmd);
-
-    // Read results
-    if (!file_exists($result_filename)) {
-        unlink($proxy_file_path);
-        response(false, 'Failed to check proxies. Python script error: ' . $output);
+    if (empty($proxies)) {
+        response(false, 'Please provide either a proxy file or URLs to scrape proxies from');
     }
 
-    $working_proxies = file($result_filename, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    $working_count = count($working_proxies);
-    $total_proxies = count(file($proxy_file_path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES));
-    unlink($proxy_file_path);
+    // Sanitize: Keep only IP:PORT formatted proxies
+    $valid_format_proxies = array_filter($proxies, function($proxy) {
+        return preg_match('/^\d{1,3}(?:\.\d{1,3}){3}:\d{1,5}$/', trim($proxy));
+    });
 
-    // Reset and insert into database
+    // Insert into database in chunks of 50
     try {
         $pdo->exec("TRUNCATE TABLE valid_proxies");
         $pdo->exec("ALTER TABLE valid_proxies AUTO_INCREMENT = 1");
 
         $stmt = $pdo->prepare("INSERT IGNORE INTO valid_proxies (ip, port) VALUES (?, ?)");
 
-        foreach ($working_proxies as $proxy) {
-            [$ip, $port] = explode(':', $proxy);
-            $stmt->execute([$ip, $port]);
+        $chunks = array_chunk($valid_format_proxies, 50);
+        foreach ($chunks as $chunk) {
+            foreach ($chunk as $proxy) {
+                [$ip, $port] = explode(':', $proxy);
+                $stmt->execute([$ip, $port]);
+            }
         }
+
+        response(true, "Inserted " . count($valid_format_proxies) . " proxies into the database (sources: " . implode(' and ', $proxySources) . ").");
     } catch (PDOException $e) {
         response(false, 'Database error: ' . $e->getMessage());
     }
-
-    // Return JSON result
-    response(true, 'Proxy check completed', [
-        'total_proxies' => $total_proxies,
-        'working_proxies' => $working_proxies,
-        'percentage' => $total_proxies > 0 ? round(($working_count / $total_proxies) * 100, 1) : 0,
-        'result_file' => $result_filename,
-        'output' => $output
-    ]);
 }
 
 /**
  * Helper function to send a JSON response and exit.
  */
 function response($success, $message, $extra = []) {
+    header('Content-Type: application/json');
     echo json_encode(array_merge([
         'success' => $success,
         'message' => $message
